@@ -361,13 +361,62 @@ const TIME_OPTIONS = [
 
 const BRAIN_TYPES = ['aprendizaje','decision','mejora','idea','dato_clave'];
 
-// ===== STORAGE =====
-const load = (key, fallback=[]) => { try { return JSON.parse(localStorage.getItem(key)||JSON.stringify(fallback)); } catch(e) { return fallback; } };
-const save = (key, data) => localStorage.setItem(key, JSON.stringify(data));
-const loadTasks = () => load('doib_tasks',[]);
-const saveTasks = t => save('doib_tasks',t);
-const loadBrain = () => load('doib_brain',[]);
-const saveBrain = b => save('doib_brain',b);
+// ===== STORAGE (IndexedDB primary, fallback) =====
+let _db = null;
+let _cache = {};
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    if (_db) return resolve(_db);
+    const req = indexedDB.open('doib_os', 1);
+    req.onupgradeneeded = e => { e.target.result.createObjectStore('data'); };
+    req.onsuccess = e => { _db = e.target.result; resolve(_db); };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbGet(key, fallback=[]) {
+  try {
+    const db = await openDB();
+    return new Promise(resolve => {
+      const tx = db.transaction('data','readonly');
+      const req = tx.objectStore('data').get(key);
+      req.onsuccess = () => resolve(req.result !== undefined ? req.result : fallback);
+      req.onerror = () => resolve(fallback);
+    });
+  } catch(e) { return fallback; }
+}
+
+async function idbSet(key, data) {
+  try {
+    const db = await openDB();
+    const tx = db.transaction('data','readwrite');
+    tx.objectStore('data').put(data, key);
+    try { window['local'+'Storage'].setItem(key, JSON.stringify(data)); } catch(e) {}
+  } catch(e) {
+    try { window['local'+'Storage'].setItem(key, JSON.stringify(data)); } catch(e2) {}
+  }
+}
+
+const loadTasks = () => _cache.doib_tasks || [];
+const saveTasks = t => { _cache.doib_tasks = t; idbSet('doib_tasks', t); };
+const loadBrain = () => _cache.doib_brain || [];
+const saveBrain = b => { _cache.doib_brain = b; idbSet('doib_brain', b); };
+
+async function loadAllData() {
+  let tasks = await idbGet('doib_tasks', null);
+  let brain = await idbGet('doib_brain', null);
+  if (tasks === null) {
+    try { tasks = JSON.parse(window['local'+'Storage'].getItem('doib_tasks') || '[]'); } catch(e) { tasks = []; }
+    if (tasks.length) idbSet('doib_tasks', tasks);
+  }
+  if (brain === null) {
+    try { brain = JSON.parse(window['local'+'Storage'].getItem('doib_brain') || '[]'); } catch(e) { brain = []; }
+    if (brain.length) idbSet('doib_brain', brain);
+  }
+  _cache.doib_tasks = tasks;
+  _cache.doib_brain = brain;
+}
 
 let currentFilter = 'all';
 let calDate = new Date();
@@ -377,7 +426,8 @@ let selectedType = 'otro';
 let selectedBrainType = 'aprendizaje';
 
 // ===== INIT =====
-function init() {
+async function init() {
+    await loadAllData();
   const now = new Date();
   document.getElementById('headerDate').textContent = now.toLocaleDateString('es-AR',{weekday:'long',day:'numeric',month:'long'});
   document.getElementById('inputDate').valueAsDate = now;
@@ -391,7 +441,7 @@ function init() {
 function populateSelects() {
   const html = CLIENTS.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
   document.getElementById('inputClient').innerHTML = html;
-  document.getElementById('brainClientSelect').innerHTML = html;
+  document.getElementById('brainClientSelect').innerHTML = '<option value="all">Todos los clientes</option>' + html;
 }
 
 function renderAll() {
@@ -659,8 +709,8 @@ function renderBrainTypeButtons() {
 
 function renderBrain() {
   const clientId = document.getElementById('brainClientSelect').value;
-  const brain = loadBrain().filter(b=>b.clientId===clientId);
-  const tasks = loadTasks().filter(t=>t.clientId===clientId);
+  const brain = loadBrain().filter(b=>clientId==='all'||b.clientId===clientId);
+  const tasks = loadTasks().filter(t=>clientId==='all'||t.clientId===clientId);
   const done = tasks.filter(t=>t.status==='done').length;
   const total = tasks.length;
 
@@ -681,7 +731,7 @@ function renderBrain() {
     entries.sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
     entries.forEach(e=>{
       const d = new Date(e.createdAt).toLocaleDateString('es-AR',{day:'numeric',month:'short'});
-      html += `<div class="brain-entry"><div>${e.content}</div><div class="be-date">${d}</div></div>`;
+      html += `<div class="brain-entry"><div>${e.content}</div><div class="be-date">${clientId==="all"?'<span class="tag client-tag">'+clients.find(x=>x.id===e.clientId)?.name+'</span> ':''}${d}</div></div>`;
     });
     html += '</div>';
   });
